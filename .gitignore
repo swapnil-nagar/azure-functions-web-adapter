@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target/
+
+# Node.js
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Azure Functions
+local.settings.json
+bin/
+obj/
+
+# Compiled binaries in examples
+examples/**/workers/web-adapter/azure-func-web-adapter*
+!examples/**/workers/web-adapter/worker.config.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

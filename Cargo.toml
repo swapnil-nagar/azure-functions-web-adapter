@@ -1,0 +1,57 @@
+[package]
+name = "azure-functions-web-adapter"
+version = "0.1.0"
+edition = "2021"
+authors = ["Azure Functions Web Adapter Contributors"]
+description = "Run any web application on Azure Functions without code changes"
+license = "MIT"
+repository = "https://github.com/example/azure-functions-web-adapter"
+keywords = ["azure", "functions", "serverless", "web-adapter", "grpc"]
+categories = ["web-programming", "network-programming"]
+
+[[bin]]
+name = "azure-func-web-adapter"
+path = "src/main.rs"
+
+[lib]
+name = "azure_functions_web_adapter"
+path = "src/lib.rs"
+
+[dependencies]
+# gRPC / Protobuf
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# HTTP client for forwarding
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+hex = "0.4"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
