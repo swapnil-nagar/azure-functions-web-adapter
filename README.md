@@ -162,6 +162,7 @@ Set `AZURE_FWA_MODE=proxy` and `WEBSITE_PLACEHOLDER_MODE=1` for this mode.
 | Framework | Language | Example |
 |---|---|---|
 | Express.js | Node.js | [examples/expressjs](examples/expressjs) |
+| Spring Boot | Java | [examples/springboot](examples/springboot) |
 | Flask | Python | [examples/flask](examples/flask) |
 | FastAPI | Python | [examples/fastapi](examples/fastapi) |
 
