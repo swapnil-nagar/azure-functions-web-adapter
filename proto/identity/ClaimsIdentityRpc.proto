@@ -1,0 +1,21 @@
+// Claims identity types used by the Azure Functions RPC protocol.
+// Wire-compatible with the official proto at:
+// https://github.com/Azure/azure-functions-language-worker-protobuf/blob/dev/src/proto/identity/ClaimsIdentityRpc.proto
+
+syntax = "proto3";
+
+package AzureFunctionsRpcMessages;
+
+import "shared/NullableTypes.proto";
+
+message RpcClaimsIdentity {
+  NullableString authentication_type = 1;
+  NullableString name_claim_type = 2;
+  NullableString role_claim_type = 3;
+  repeated RpcClaim claims = 4;
+}
+
+message RpcClaim {
+  string value = 1;
+  string type = 2;
+}

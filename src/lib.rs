@@ -52,7 +52,7 @@ pub mod readiness;
 
 /// Re-export generated protobuf types.
 pub mod proto {
-    tonic::include_proto!("azure_functions_worker");
+    tonic::include_proto!("azure_functions_rpc_messages");
 }
 
 /// Crate-level error type.

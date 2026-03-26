@@ -119,6 +119,7 @@ pub async fn run_proxy(args: WorkerStartupArgs) -> Result<(), Box<dyn std::error
                                         exception: None,
                                         logs: vec![],
                                     }),
+                                    worker_metadata: None,
                                 },
                             )),
                         })
@@ -195,13 +196,15 @@ pub async fn run_proxy(args: WorkerStartupArgs) -> Result<(), Box<dyn std::error
                         content: Some(
                             streaming_message::Content::FunctionEnvironmentReloadResponse(
                                 FunctionEnvironmentReloadResponse {
+                                    worker_metadata: None,
+                                    capabilities: HashMap::new(),
                                     result: Some(StatusResult {
                                         status: status_result::Status::Success as i32,
                                         result: String::new(),
                                         exception: None,
                                         logs: vec![],
                                     }),
-                                    worker_init_response: None,
+                                    capabilities_update_strategy: 0,
                                 },
                             ),
                         ),

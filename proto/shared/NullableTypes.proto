@@ -1,0 +1,33 @@
+// Nullable wrappers used by the Azure Functions RPC protocol.
+// Wire-compatible with the official proto at:
+// https://github.com/Azure/azure-functions-language-worker-protobuf/blob/dev/src/proto/shared/NullableTypes.proto
+
+syntax = "proto3";
+
+package AzureFunctionsRpcMessages;
+
+import "google/protobuf/timestamp.proto";
+
+message NullableString {
+  oneof string {
+    string value = 1;
+  }
+}
+
+message NullableDouble {
+  oneof double {
+    double value = 1;
+  }
+}
+
+message NullableBool {
+  oneof bool {
+    bool value = 1;
+  }
+}
+
+message NullableTimestamp {
+  oneof timestamp {
+    google.protobuf.Timestamp value = 1;
+  }
+}

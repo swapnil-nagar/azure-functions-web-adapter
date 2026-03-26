@@ -19,7 +19,7 @@ use std::time::Duration;
 fn make_invocation(method: &str, url: &str, body: Option<&str>) -> InvocationRequest {
     let rpc_body = body.map(|b| {
         Box::new(TypedData {
-            data: Some(typed_data::Data::StringValue(b.to_string())),
+            data: Some(typed_data::Data::String(b.to_string())),
         })
     });
 
@@ -37,16 +37,21 @@ fn make_invocation(method: &str, url: &str, body: Option<&str>) -> InvocationReq
         status_code: String::new(),
         nullable_headers: HashMap::new(),
         nullable_params: HashMap::new(),
+        nullable_query: HashMap::new(),
         query: HashMap::new(),
         enable_content_negotiation: false,
         raw_body: None,
+        identities: vec![],
+        cookies: vec![],
     };
 
     let input_binding = ParameterBinding {
         name: "req".to_string(),
-        data: Some(TypedData {
-            data: Some(typed_data::Data::Http(Box::new(rpc_http))),
-        }),
+        rpc_data: Some(
+            azure_functions_web_adapter::proto::parameter_binding::RpcData::Data(TypedData {
+                data: Some(typed_data::Data::Http(Box::new(rpc_http))),
+            }),
+        ),
     };
 
     InvocationRequest {
@@ -112,14 +117,14 @@ async fn test_forward_get_root() {
     let output = &response.output_data[0];
     assert_eq!(output.name, "$return");
 
-    if let Some(TypedData {
+    if let Some(azure_functions_web_adapter::proto::parameter_binding::RpcData::Data(TypedData {
         data: Some(typed_data::Data::Http(ref http)),
-    }) = output.data
+    })) = output.rpc_data
     {
         assert_eq!(http.status_code, "200");
         // Body should contain our Express.js response
         if let Some(ref body) = http.body {
-            if let Some(typed_data::Data::StringValue(ref s)) = body.data {
+            if let Some(typed_data::Data::String(ref s)) = body.data {
                 assert!(s.contains("Hello from Express.js on Azure Functions!"));
                 assert!(s.contains("Express.js"));
                 println!("GET / response body: {}", s);
@@ -143,13 +148,13 @@ async fn test_forward_get_hello_with_query() {
     let response = forwarder.forward(&request).await;
 
     let output = &response.output_data[0];
-    if let Some(TypedData {
+    if let Some(azure_functions_web_adapter::proto::parameter_binding::RpcData::Data(TypedData {
         data: Some(typed_data::Data::Http(ref http)),
-    }) = output.data
+    })) = output.rpc_data
     {
         assert_eq!(http.status_code, "200");
         if let Some(ref body) = http.body {
-            if let Some(typed_data::Data::StringValue(ref s)) = body.data {
+            if let Some(typed_data::Data::String(ref s)) = body.data {
                 assert!(s.contains("Hello, AzureAdapter!"));
                 println!("GET /api/hello?name=AzureAdapter response: {}", s);
             }
@@ -167,13 +172,13 @@ async fn test_forward_post_echo() {
     let response = forwarder.forward(&request).await;
 
     let output = &response.output_data[0];
-    if let Some(TypedData {
+    if let Some(azure_functions_web_adapter::proto::parameter_binding::RpcData::Data(TypedData {
         data: Some(typed_data::Data::Http(ref http)),
-    }) = output.data
+    })) = output.rpc_data
     {
         assert_eq!(http.status_code, "200");
         if let Some(ref body) = http.body {
-            if let Some(typed_data::Data::StringValue(ref s)) = body.data {
+            if let Some(typed_data::Data::String(ref s)) = body.data {
                 assert!(s.contains("\"test\""));
                 assert!(s.contains("42"));
                 println!("POST /api/echo response: {}", s);
@@ -191,13 +196,13 @@ async fn test_forward_health_check() {
     let response = forwarder.forward(&request).await;
 
     let output = &response.output_data[0];
-    if let Some(TypedData {
+    if let Some(azure_functions_web_adapter::proto::parameter_binding::RpcData::Data(TypedData {
         data: Some(typed_data::Data::Http(ref http)),
-    }) = output.data
+    })) = output.rpc_data
     {
         assert_eq!(http.status_code, "200");
         if let Some(ref body) = http.body {
-            if let Some(typed_data::Data::StringValue(ref s)) = body.data {
+            if let Some(typed_data::Data::String(ref s)) = body.data {
                 assert!(s.contains("healthy"));
                 println!("GET /api/health response: {}", s);
             }
@@ -219,9 +224,9 @@ async fn test_forward_404_route() {
     assert_eq!(status, 1, "Adapter should succeed even for 404");
 
     let output = &response.output_data[0];
-    if let Some(TypedData {
+    if let Some(azure_functions_web_adapter::proto::parameter_binding::RpcData::Data(TypedData {
         data: Some(typed_data::Data::Http(ref http)),
-    }) = output.data
+    })) = output.rpc_data
     {
         assert_eq!(http.status_code, "404");
         println!("GET /nonexistent → status {}", http.status_code);

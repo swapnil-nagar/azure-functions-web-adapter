@@ -3,20 +3,23 @@
 
 //! Azure Functions Web Adapter — binary entry point.
 //!
-//! Supports three modes:
+//! Auto-detects the run mode based on environment:
 //!
-//! 1. **Custom Handler mode** (`func start` / local development):
-//!    Activated when `FUNCTIONS_CUSTOMHANDLER_PORT` is set. The adapter runs
-//!    as an HTTP reverse proxy, forwarding requests from the Functions Host
-//!    to the user's web application.
+//! 1. **gRPC language worker mode** (Docker / production):
+//!    When launched with `--host/--port/--workerId` CLI args by the Azure
+//!    Functions Host. The adapter connects via gRPC, registers functions
+//!    dynamically, and translates InvocationRequests to HTTP.
+//!    **No function.json, no customHandler needed.**
 //!
-//! 2. **Direct gRPC mode** (production with language worker):
-//!    Activated with `--host`/`--port` or `--functions-uri` CLI flags.
-//!    The adapter connects to the Functions Host via gRPC and handles
-//!    invocations.
+//! 2. **HTTP proxy mode** (`func start` / local development):
+//!    When `FUNCTIONS_CUSTOMHANDLER_PORT` is set by the host. The adapter
+//!    runs as an HTTP reverse proxy, forwarding requests to your web app.
+//!    Pair with `routePrefix: ""` in host.json for clean path mapping.
 //!
-//! 3. **Proxy/placeholder mode** (`AZURE_FWA_MODE=proxy`):
-//!    A lightweight proxy for consumption plan pre-warm scenarios.
+//! 3. **Proxy/placeholder mode** (consumption plan):
+//!    When `AZURE_FWA_MODE=proxy`. Handles pre-warm before specialization.
+//!
+//! In ALL modes, your web app needs ZERO code changes.
 
 use azure_functions_web_adapter::{
     config::{AdapterConfig, WorkerStartupArgs},
@@ -45,44 +48,49 @@ async fn main() -> Result<(), Error> {
         "Azure Functions Web Adapter starting"
     );
 
-    // --- Custom Handler mode (func start / local development) ---
-    // Activated when FUNCTIONS_CUSTOMHANDLER_PORT is set by the Functions Host.
+    // --- Mode detection ---
+
+    // 1. HTTP proxy mode: func start sets FUNCTIONS_CUSTOMHANDLER_PORT
     if let Ok(handler_port_str) = std::env::var("FUNCTIONS_CUSTOMHANDLER_PORT") {
         if let Ok(handler_port) = handler_port_str.parse::<u16>() {
-            info!(
-                handler_port = handler_port,
-                "running in CUSTOM HANDLER mode (func start)"
-            );
-            return run_custom_handler_mode(handler_port).await;
+            info!(handler_port, "running in HTTP proxy mode (func start)");
+            return run_http_proxy_mode(handler_port).await;
         }
     }
 
-    // Parse startup arguments from CLI flags (needed for gRPC and proxy modes)
+    // 2. gRPC / proxy mode: parse CLI args from the Functions Host
     let args = WorkerStartupArgs::from_args().map_err(|e| {
-        error!(error = %e, "failed to parse startup arguments");
+        error!(error = %e, "failed to parse startup arguments — this binary must be launched by the Azure Functions Host");
         e
     })?;
 
-    // Check if we should run in proxy mode
+    // 3. Proxy/placeholder mode for consumption plan
     let mode = std::env::var("AZURE_FWA_MODE").unwrap_or_default();
     if mode.to_lowercase() == "proxy" {
-        info!("running in PROXY mode");
+        info!("running in proxy mode (placeholder / consumption plan)");
         return proxy::run_proxy(args).await;
     }
 
-    // --- Direct gRPC mode ---
-    info!("running in DIRECT gRPC mode");
-    run_grpc_mode(args).await
+    // 4. gRPC language worker mode (primary production path)
+    info!("running as gRPC language worker");
+    run_grpc_worker(args).await
 }
 
-/// Custom Handler mode: HTTP reverse proxy for `func start`.
-async fn run_custom_handler_mode(handler_port: u16) -> Result<(), Error> {
+/// HTTP proxy mode for `func start` local development.
+///
+/// The host sets FUNCTIONS_CUSTOMHANDLER_PORT and the adapter listens
+/// on that port, proxying requests to the user's web app.
+///
+/// Pair with `"routePrefix": ""` in host.json and a catch-all function.json
+/// so routes map 1:1 to the web app.
+async fn run_http_proxy_mode(handler_port: u16) -> Result<(), Error> {
     let config = AdapterConfig::from_env();
 
     info!(
         app_port = config.port,
         host = %config.host,
         readiness_path = %config.readiness_check_path,
+        remove_base_path = ?config.remove_base_path,
         "adapter configuration loaded"
     );
 
@@ -92,13 +100,13 @@ async fn run_custom_handler_mode(handler_port: u16) -> Result<(), Error> {
         let env_vars: HashMap<String, String> = HashMap::new();
         process_mgr.spawn(cmd, None, env_vars).await?;
     } else {
-        info!("no startup command configured, assuming app is already running");
+        info!("no AZURE_FWA_STARTUP_COMMAND set, assuming web app is already running");
     }
 
     // Wait for the web application to become ready
     match readiness::wait_until_ready(&config).await {
         Ok(elapsed) => {
-            info!(?elapsed, "web application is ready, starting HTTP proxy");
+            info!(?elapsed, "web application is ready");
         }
         Err(e) => {
             error!(error = %e, "web application failed readiness check");
@@ -109,36 +117,42 @@ async fn run_custom_handler_mode(handler_port: u16) -> Result<(), Error> {
 
     // Run the HTTP reverse proxy
     let target_url = config.app_base_url();
-    let result = http_proxy::run_http_proxy(handler_port, target_url).await;
+    let remove_base_path = config.remove_base_path.clone();
+    let result = http_proxy::run_http_proxy(handler_port, target_url, remove_base_path).await;
 
     process_mgr.shutdown().await;
     result
 }
 
-/// Direct gRPC mode: connect to Functions Host via gRPC.
-async fn run_grpc_mode(args: WorkerStartupArgs) -> Result<(), Error> {
+/// gRPC language worker mode for Docker / production deployment.
+///
+/// Connects to the Azure Functions Host via gRPC, dynamically registers
+/// an HTTP catch-all function, and translates InvocationRequests to HTTP.
+/// **No function.json or customHandler needed.**
+async fn run_grpc_worker(args: WorkerStartupArgs) -> Result<(), Error> {
     let config = AdapterConfig::from_env();
 
     info!(
-        port = config.port,
+        app_port = config.port,
         host = %config.host,
         readiness_path = %config.readiness_check_path,
+        startup_command = ?config.startup_command,
         "adapter configuration loaded"
     );
 
-    // Spawn the user's web application if a startup command is configured
+    // Spawn the user's web application
     let mut process_mgr = ProcessManager::new();
     if let Some(ref cmd) = config.startup_command {
         let env_vars: HashMap<String, String> = HashMap::new();
         process_mgr.spawn(cmd, None, env_vars).await?;
     } else {
-        info!("no startup command configured (AZURE_FWA_STARTUP_COMMAND), assuming app is already running");
+        info!("no AZURE_FWA_STARTUP_COMMAND set, assuming web app is already running");
     }
 
     // Wait for the web application to become ready
     match readiness::wait_until_ready(&config).await {
         Ok(elapsed) => {
-            info!(?elapsed, "web application is ready, starting gRPC handler");
+            info!(?elapsed, "web application is ready");
         }
         Err(e) => {
             error!(error = %e, "web application failed readiness check");
@@ -147,13 +161,11 @@ async fn run_grpc_mode(args: WorkerStartupArgs) -> Result<(), Error> {
         }
     }
 
-    // Create the HTTP forwarder
+    // Create the HTTP forwarder (translates gRPC InvocationRequest → HTTP → InvocationResponse)
     let forwarder = HttpForwarder::new(&config);
 
     // Create and run the gRPC handler
     let handler = GrpcHandler::new(args, forwarder);
-
-    // Run until the host terminates us
     let result = handler.run().await;
 
     // Graceful shutdown

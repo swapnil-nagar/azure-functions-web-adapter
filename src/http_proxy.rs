@@ -27,14 +27,18 @@ use tracing::{debug, error, info};
 struct ProxyConfig {
     /// The base URL of the user's web application (e.g. "http://127.0.0.1:8080").
     target_base: String,
+    /// Optional base path to strip from incoming request paths.
+    remove_base_path: Option<String>,
 }
 
 /// Run the HTTP reverse proxy server.
 ///
 /// Listens on `listen_port` and forwards all requests to `target_base_url`.
+/// If `remove_base_path` is set, strips that prefix from request paths before forwarding.
 pub async fn run_http_proxy(
     listen_port: u16,
     target_base_url: String,
+    remove_base_path: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], listen_port));
     let listener = TcpListener::bind(addr).await?;
@@ -42,11 +46,13 @@ pub async fn run_http_proxy(
     info!(
         listen_port = listen_port,
         target = %target_base_url,
-        "HTTP proxy listening (Custom Handler mode)"
+        remove_base_path = ?remove_base_path,
+        "HTTP proxy listening"
     );
 
     let config = Arc::new(ProxyConfig {
         target_base: target_base_url,
+        remove_base_path,
     });
 
     loop {
@@ -83,7 +89,31 @@ async fn proxy_request(
         .map(|pq| pq.as_str())
         .unwrap_or("/");
 
-    let target_url = format!("{}{}", config.target_base, path_and_query);
+    // Apply base path stripping if configured
+    let stripped_path = if let Some(ref base) = config.remove_base_path {
+        let (path, query) = path_and_query.split_once('?')
+            .map(|(p, q)| (p, Some(q)))
+            .unwrap_or((path_and_query, None));
+
+        let mut new_path = if path.starts_with(base.as_str()) {
+            path[base.len()..].to_string()
+        } else {
+            path.to_string()
+        };
+
+        if !new_path.starts_with('/') {
+            new_path = format!("/{}", new_path);
+        }
+
+        match query {
+            Some(q) => format!("{}?{}", new_path, q),
+            None => new_path,
+        }
+    } else {
+        path_and_query.to_string()
+    };
+
+    let target_url = format!("{}{}", config.target_base, stripped_path);
 
     debug!(
         method = %method,

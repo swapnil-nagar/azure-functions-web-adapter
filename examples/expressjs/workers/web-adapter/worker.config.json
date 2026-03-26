@@ -1,9 +1,8 @@
 {
     "description": {
         "language": "web-adapter",
-        "defaultExecutablePath": "azure-func-web-adapter.exe",
-        "workerIndexing": "true",
-        "arguments": []
+        "defaultExecutablePath": "workers/web-adapter/azure-func-web-adapter.exe",
+        "workerIndexing": "true"
     },
     "processOptions": {
         "initializationTimeout": "00:02:00",

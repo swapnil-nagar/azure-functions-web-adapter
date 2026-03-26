@@ -44,43 +44,65 @@ Azure Functions Web Adapter allows developers to build web apps with familiar fr
 
 ## Quick Start
 
-### 1. Add the adapter to your project
+### 1. Structure your project
 
 ```
 my-function-app/
-├── host.json
-├── worker.config.json         ← Points to the adapter binary
-├── azure-func-web-adapter     ← The adapter binary
+├── host.json                       # Standard Azure Functions config (no customHandler!)
+├── local.settings.json             # AZURE_FWA_* env vars
+├── workers/
+│   └── web-adapter/
+│       ├── azure-func-web-adapter  # The adapter binary
+│       └── worker.config.json      # Worker discovery config
 └── app/
-    ├── index.js               ← Your standard Express.js app
+    ├── index.js                    # Your standard web app (ZERO CHANGES)
     └── package.json
 ```
 
-### 2. Configure `worker.config.json`
+### 2. `host.json` — minimal, no customHandler
+
+```json
+{
+    "version": "2.0",
+    "extensionBundle": {
+        "id": "Microsoft.Azure.Functions.ExtensionBundle",
+        "version": "[4.*, 5.0.0)"
+    }
+}
+```
+
+### 3. `local.settings.json` — configure via env vars
+
+```json
+{
+    "Values": {
+        "FUNCTIONS_WORKER_RUNTIME": "web-adapter",
+        "AZURE_FWA_PORT": "8080",
+        "AZURE_FWA_STARTUP_COMMAND": "node app/index.js",
+        "AZURE_FWA_READINESS_CHECK_PATH": "/"
+    }
+}
+```
+
+### 4. `workers/web-adapter/worker.config.json`
 
 ```json
 {
     "description": {
         "language": "web-adapter",
-        "defaultExecutablePath": "{AzureWebJobsScriptRoot}/azure-func-web-adapter",
+        "defaultExecutablePath": "azure-func-web-adapter",
         "workerIndexing": "true"
     }
 }
 ```
 
-### 3. Set environment variables
+### 5. Run
 
 ```bash
-AZURE_FWA_PORT=8080                              # Port your app listens on
-AZURE_FWA_STARTUP_COMMAND="node app/index.js"    # Command to start your app
-AZURE_FWA_READINESS_CHECK_PATH="/"               # Health check endpoint
+func start
 ```
 
-### 4. Deploy
-
-```bash
-func azure functionapp publish <app-name>
-```
+**No `function.json` needed** — the adapter registers an HTTP catch-all dynamically via worker-driven indexing.
 
 ## Features
 

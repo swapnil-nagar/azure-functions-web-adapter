@@ -107,7 +107,7 @@ impl HttpForwarder {
     ) -> Result<RpcHttp, Box<dyn std::error::Error + Send + Sync>> {
         // First, check input_data for an HTTP binding (named "req" by convention)
         for binding in &invocation.input_data {
-            if let Some(ref data) = binding.data {
+            if let Some(proto::parameter_binding::RpcData::Data(ref data)) = binding.rpc_data {
                 if let Some(typed_data::Data::Http(ref http)) = data.data {
                     return Ok(*http.clone());
                 }
@@ -172,7 +172,7 @@ impl HttpForwarder {
 
         // Also process nullable_headers
         for (key, nullable_val) in &rpc_http.nullable_headers {
-            if let Some(proto::nullable_string::Value::StringValue(ref v)) = nullable_val.value {
+            if let Some(proto::nullable_string::String::Value(ref v)) = nullable_val.string {
                 let lower_key = key.to_lowercase();
                 if !matches!(
                     lower_key.as_str(),
@@ -198,13 +198,13 @@ impl HttpForwarder {
     fn extract_body(&self, body: &Option<&TypedData>) -> Bytes {
         match body {
             Some(TypedData {
-                data: Some(typed_data::Data::StringValue(s)),
+                data: Some(typed_data::Data::String(s)),
             }) => Bytes::from(s.clone()),
             Some(TypedData {
                 data: Some(typed_data::Data::Json(s)),
             }) => Bytes::from(s.clone()),
             Some(TypedData {
-                data: Some(typed_data::Data::BytesValue(b)),
+                data: Some(typed_data::Data::Bytes(b)),
             }) => Bytes::from(b.clone()),
             Some(TypedData {
                 data: Some(typed_data::Data::Stream(b)),
@@ -244,12 +244,12 @@ impl HttpForwarder {
         let body_data = if is_binary {
             // Return as bytes for binary content
             Some(Box::new(TypedData {
-                data: Some(typed_data::Data::BytesValue(body_bytes.to_vec())),
+                data: Some(typed_data::Data::Bytes(body_bytes.to_vec())),
             }))
         } else {
             // Return as string for text content
             Some(Box::new(TypedData {
-                data: Some(typed_data::Data::StringValue(
+                data: Some(typed_data::Data::String(
                     String::from_utf8_lossy(&body_bytes).to_string(),
                 )),
             }))
@@ -264,17 +264,24 @@ impl HttpForwarder {
             params: HashMap::new(),
             nullable_headers: HashMap::new(),
             nullable_params: HashMap::new(),
+            nullable_query: HashMap::new(),
             query: HashMap::new(),
             enable_content_negotiation: false,
             raw_body: None,
+            identities: vec![],
+            cookies: vec![],
         };
 
-        // The response goes in the "$return" output binding
+        // For HTTP trigger functions, the host expects the response in return_value
+        // as an RpcHttp-typed TypedData. We also put it in output_data["$return"]
+        // for compatibility with both code paths in the host.
+        let http_typed_data = TypedData {
+            data: Some(typed_data::Data::Http(Box::new(rpc_http_response))),
+        };
+
         let output_binding = ParameterBinding {
             name: "$return".to_string(),
-            data: Some(TypedData {
-                data: Some(typed_data::Data::Http(Box::new(rpc_http_response))),
-            }),
+            rpc_data: Some(proto::parameter_binding::RpcData::Data(http_typed_data.clone())),
         };
 
         debug!(
@@ -285,7 +292,7 @@ impl HttpForwarder {
         Ok(InvocationResponse {
             invocation_id: invocation_id.to_string(),
             output_data: vec![output_binding],
-            return_value: None,
+            return_value: Some(http_typed_data),
             result: Some(StatusResult {
                 status: proto::status_result::Status::Success as i32,
                 result: String::new(),

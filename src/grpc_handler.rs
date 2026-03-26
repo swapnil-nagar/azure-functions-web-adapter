@@ -69,14 +69,18 @@ impl GrpcHandler {
 
         // Create a channel for sending messages to the host
         let (tx, rx) = mpsc::channel::<StreamingMessage>(256);
+
+        // CRITICAL: Send StartStream BEFORE calling event_stream().
+        // The Azure Functions Host doesn't send response HEADERS until it
+        // receives StartStream. If we send StartStream after event_stream(),
+        // we get a deadlock (client waits for HEADERS, host waits for StartStream).
+        self.send_start_stream(&tx).await?;
+
         let outbound = ReceiverStream::new(rx);
 
-        // Start the bidirectional stream
+        // Start the bidirectional stream — host sees StartStream immediately
         let response = client.event_stream(outbound).await?;
         let mut inbound = response.into_inner();
-
-        // Send StartStream to establish our identity
-        self.send_start_stream(&tx).await?;
 
         info!("gRPC event stream established, entering message loop");
 
@@ -115,18 +119,27 @@ impl GrpcHandler {
 
         match msg.content {
             Some(streaming_message::Content::WorkerInitRequest(req)) => {
+                info!(request_id = %request_id, "received WorkerInitRequest");
                 self.handle_worker_init(req, &request_id, tx).await?;
             }
             Some(streaming_message::Content::FunctionsMetadataRequest(req)) => {
+                info!(request_id = %request_id, "received FunctionsMetadataRequest");
                 self.handle_functions_metadata(req, &request_id, tx).await?;
             }
             Some(streaming_message::Content::FunctionLoadRequest(req)) => {
+                info!(request_id = %request_id, "received FunctionLoadRequest");
                 self.handle_function_load(req, &request_id, tx).await?;
             }
+            Some(streaming_message::Content::FunctionLoadRequestCollection(req)) => {
+                info!(request_id = %request_id, count = req.function_load_requests.len(), "received FunctionLoadRequestCollection");
+                self.handle_function_load_collection(req, &request_id, tx).await?;
+            }
             Some(streaming_message::Content::InvocationRequest(req)) => {
+                info!(request_id = %request_id, invocation_id = %req.invocation_id, "received InvocationRequest");
                 self.handle_invocation(req, &request_id, tx).await?;
             }
             Some(streaming_message::Content::WorkerStatusRequest(_)) => {
+                info!(request_id = %request_id, "received WorkerStatusRequest");
                 self.handle_worker_status(&request_id, tx).await?;
             }
             Some(streaming_message::Content::WorkerHeartbeat(_)) => {
@@ -140,7 +153,7 @@ impl GrpcHandler {
                 return Err("worker terminated by host".into());
             }
             other => {
-                debug!(?other, "unhandled message type");
+                info!(?other, "unhandled message type");
             }
         }
 
@@ -161,9 +174,9 @@ impl GrpcHandler {
         );
 
         let mut capabilities = HashMap::new();
-        // Report capabilities similar to the Go Worker
-        capabilities.insert("RpcHttpTriggerMetadataRemoved".to_string(), "true".to_string());
-        capabilities.insert("RpcHttpBodyOnly".to_string(), "true".to_string());
+        // Report capabilities to the host.
+        // NOTE: Do NOT set RpcHttpBodyOnly or RpcHttpTriggerMetadataRemoved —
+        // we need the full RpcHttp object to forward requests to the web app.
         capabilities.insert("HandlesWorkerTerminateMessage".to_string(), "true".to_string());
         capabilities.insert("SupportsLoadResponseCollection".to_string(), "true".to_string());
         capabilities.insert("WorkerStatus".to_string(), "true".to_string());
@@ -179,6 +192,13 @@ impl GrpcHandler {
                         result: String::new(),
                         exception: None,
                         logs: vec![],
+                    }),
+                    worker_metadata: Some(WorkerMetadata {
+                        runtime_name: "web-adapter".to_string(),
+                        runtime_version: ADAPTER_VERSION.to_string(),
+                        worker_version: ADAPTER_VERSION.to_string(),
+                        worker_bitness: std::env::consts::ARCH.to_string(),
+                        custom_properties: HashMap::new(),
                     }),
                 },
             )),
@@ -203,45 +223,65 @@ impl GrpcHandler {
 
         // Build the HTTP trigger binding — catches all routes and methods
         let mut trigger_properties = HashMap::new();
-        trigger_properties.insert("type".to_string(), "httpTrigger".to_string());
-        trigger_properties.insert("direction".to_string(), "in".to_string());
         trigger_properties.insert("authLevel".to_string(), "anonymous".to_string());
         trigger_properties.insert("route".to_string(), "{*path}".to_string());
 
         let trigger_binding = BindingInfo {
-            r#type: binding_info::BindingType::Trigger as i32,
-            direction_string: "in".to_string(),
-            data_type: "string".to_string(),
+            r#type: "httpTrigger".to_string(),
+            direction: binding_info::Direction::In as i32,
+            data_type: binding_info::DataType::String as i32,
             properties: trigger_properties,
         };
 
         // HTTP output binding
-        let mut output_properties = HashMap::new();
-        output_properties.insert("type".to_string(), "http".to_string());
-        output_properties.insert("direction".to_string(), "out".to_string());
-
         let output_binding = BindingInfo {
-            r#type: binding_info::BindingType::Output as i32,
-            direction_string: "out".to_string(),
-            data_type: "string".to_string(),
-            properties: output_properties,
+            r#type: "http".to_string(),
+            direction: binding_info::Direction::Out as i32,
+            data_type: binding_info::DataType::Undefined as i32,
+            properties: HashMap::new(),
         };
 
         let mut bindings = HashMap::new();
         bindings.insert("req".to_string(), trigger_binding);
         bindings.insert("$return".to_string(), output_binding);
 
+        // raw_bindings: JSON-serialized binding definitions that the host parses
+        let raw_bindings = vec![
+            serde_json::json!({
+                "name": "req",
+                "type": "httpTrigger",
+                "direction": "in",
+                "authLevel": "anonymous",
+                "route": "{*path}",
+                "methods": ["get", "post", "put", "delete", "patch", "head", "options"]
+            }).to_string(),
+            serde_json::json!({
+                "name": "$return",
+                "type": "http",
+                "direction": "out"
+            }).to_string(),
+        ];
+
+        // script_file must point to an actual file for the host to accept.
+        // Use the current executable path (the adapter binary itself).
+        let script_file = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "azure-func-web-adapter".to_string());
+
         let function_metadata = RpcFunctionMetadata {
             name: self.function_name.clone(),
             directory: req.function_app_directory.clone(),
-            script_file: String::new(),
-            entry_point: String::new(),
+            script_file,
+            entry_point: self.function_name.clone(),
             function_id: self.function_id.clone(),
             is_proxy: false,
             bindings,
+            status: None,
             language: WORKER_LANGUAGE.to_string(),
-            properties: HashMap::new(),
+            raw_bindings,
+            managed_dependency_enabled: false,
             retry_options: None,
+            properties: HashMap::new(),
         };
 
         let response = StreamingMessage {
@@ -298,6 +338,45 @@ impl GrpcHandler {
         Ok(())
     }
 
+    /// Handle FunctionLoadRequestCollection — batch acknowledge function loading.
+    async fn handle_function_load_collection(
+        &self,
+        req: FunctionLoadRequestCollection,
+        request_id: &str,
+        tx: &mpsc::Sender<StreamingMessage>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let responses: Vec<FunctionLoadResponse> = req
+            .function_load_requests
+            .iter()
+            .map(|load_req| {
+                info!(function_id = %load_req.function_id, "loading function (batch)");
+                FunctionLoadResponse {
+                    function_id: load_req.function_id.clone(),
+                    result: Some(StatusResult {
+                        status: status_result::Status::Success as i32,
+                        result: String::new(),
+                        exception: None,
+                        logs: vec![],
+                    }),
+                    is_dependency_downloaded: false,
+                }
+            })
+            .collect();
+
+        let response = StreamingMessage {
+            request_id: request_id.to_string(),
+            content: Some(streaming_message::Content::FunctionLoadResponseCollection(
+                FunctionLoadResponseCollection {
+                    function_load_responses: responses,
+                },
+            )),
+        };
+
+        tx.send(response).await?;
+        info!("sent FunctionLoadResponseCollection");
+        Ok(())
+    }
+
     /// Handle InvocationRequest — the hot path!
     /// Forward the HTTP request to the user's web app and return the response.
     async fn handle_invocation(
@@ -306,14 +385,22 @@ impl GrpcHandler {
         request_id: &str,
         tx: &mpsc::Sender<StreamingMessage>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        debug!(
+        info!(
             invocation_id = %req.invocation_id,
             function_id = %req.function_id,
+            input_count = req.input_data.len(),
+            trigger_keys = ?req.trigger_metadata.keys().collect::<Vec<_>>(),
             "handling InvocationRequest"
         );
 
         // Forward to the user's web application
         let invocation_response = self.forwarder.forward(&req).await;
+
+        info!(
+            invocation_id = %req.invocation_id,
+            status = ?invocation_response.result.as_ref().map(|r| r.status),
+            "sending InvocationResponse"
+        );
 
         let response = StreamingMessage {
             request_id: request_id.to_string(),
@@ -323,6 +410,7 @@ impl GrpcHandler {
         };
 
         tx.send(response).await?;
+        info!("InvocationResponse sent to channel");
         Ok(())
     }
 
@@ -380,13 +468,15 @@ impl GrpcHandler {
             request_id: request_id.to_string(),
             content: Some(streaming_message::Content::FunctionEnvironmentReloadResponse(
                 FunctionEnvironmentReloadResponse {
+                    worker_metadata: None,
+                    capabilities: HashMap::new(),
                     result: Some(StatusResult {
                         status: status_result::Status::Success as i32,
                         result: String::new(),
                         exception: None,
                         logs: vec![],
                     }),
-                    worker_init_response: None,
+                    capabilities_update_strategy: 0,
                 },
             )),
         };

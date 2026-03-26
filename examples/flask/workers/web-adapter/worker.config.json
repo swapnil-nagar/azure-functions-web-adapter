@@ -1,7 +1,7 @@
 {
     "description": {
         "language": "web-adapter",
-        "defaultExecutablePath": "{AzureWebJobsScriptRoot}/azure-func-web-adapter",
+        "defaultExecutablePath": "workers/web-adapter/azure-func-web-adapter.exe",
         "workerIndexing": "true"
     },
     "processOptions": {
