@@ -221,13 +221,19 @@ impl HttpForwarder {
     ) -> Result<InvocationResponse, Box<dyn std::error::Error + Send + Sync>> {
         let status = response.status().as_u16().to_string();
 
-        // Collect response headers
+        // Collect response headers, skipping hop-by-hop headers that the
+        // Azure Functions Host will manage on the outer HTTP response.
         let mut headers: HashMap<String, String> = HashMap::new();
         for (key, value) in response.headers() {
-            headers.insert(
-                key.as_str().to_string(),
-                value.to_str().unwrap_or("").to_string(),
-            );
+            match key.as_str() {
+                "transfer-encoding" | "connection" | "keep-alive" => continue,
+                _ => {
+                    headers.insert(
+                        key.as_str().to_string(),
+                        value.to_str().unwrap_or("").to_string(),
+                    );
+                }
+            }
         }
 
         // Determine if response is binary
@@ -239,6 +245,12 @@ impl HttpForwarder {
 
         // Read the full response body
         let body_bytes = response.into_body().collect().await?.to_bytes();
+
+        // Ensure Content-Length is set so the host doesn't default to
+        // Transfer-Encoding: chunked (which can cause framing errors).
+        if !headers.contains_key("content-length") {
+            headers.insert("content-length".to_string(), body_bytes.len().to_string());
+        }
 
         // Build the RpcHttp response
         let body_data = if is_binary {
